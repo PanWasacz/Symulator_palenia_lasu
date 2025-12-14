@@ -1,0 +1,1 @@
+# Symulator_palenia_lasu
