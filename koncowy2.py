@@ -14,7 +14,7 @@ P_SPREAD_BASE = 0.25
 P_GROW_BASE = 0.0005
 P_ASH_DECAY_BASE = 0.005
 FIRE_DECAY_BASE = 0.15
-P_DESERT_SPREAD = 0.08  # Bardzo wolne rozprzestrzenianie pustyni
+P_DESERT_SPREAD = 0.03  # Bardzo wolne rozprzestrzenianie pustyni
 
 # Stany komórek
 EMPTY = 0
@@ -26,7 +26,7 @@ ASH = 6
 WATER = 7
 ROCK = 8
 FIREBREAK = 9
-DESERT = 10  # NOWE - pustynia
+DESERT = 10
 
 # Kolory z wariacjami dla lepszej grafiki
 def get_water_color(x, y, step):
@@ -208,7 +208,10 @@ class ForestFireSimulation:
             self.update_window_size()
 
     def draw_circle_safe(self, cx, cy, radius, state, store_width=None):
-        """Bezpieczne rysowanie kół z kontrolą nakładania"""
+        """
+        Bezpieczne rysowanie kół - ZAKTUALIZOWANE
+        NIE nadpisuje już istniejących obiektów (woda, góry, pustynia)
+        """
         min_y = max(0, int(cy - radius))
         max_y = min(self.grid_height, int(cy + radius + 1))
         min_x = max(0, int(cx - radius))
@@ -217,21 +220,42 @@ class ForestFireSimulation:
         for y in range(min_y, max_y):
             for x in range(min_x, max_x):
                 if (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2:
-                    if state == ROCK and self.grid[y][x] == WATER:
-                        continue
-                    if state == WATER and self.grid[y][x] == ROCK:
-                        continue
+                    current_state = self.grid[y][x]
                     
-                    if self.grid[y][x] == EMPTY:
+                    # NOWA LOGIKA: Chronione tereny
+                    protected_states = {WATER, ROCK, DESERT}
+                    
+                    # Jeśli próbujemy narysować wodę
+                    if state == WATER:
+                        # Woda nie może być na: pustyni, górach, innej wodzie
+                        if current_state in {DESERT, ROCK, WATER}:
+                            continue
+                    
+                    # Jeśli próbujemy narysować góry
+                    elif state == ROCK:
+                        # Góry nie mogą być na: wodzie, pustyni, innych górach
+                        if current_state in {WATER, DESERT, ROCK}:
+                            continue
+                    
+                    # Jeśli próbujemy narysować pustynię
+                    elif state == DESERT:
+                        # Pustynia nie może być na: wodzie, górach, innej pustyni
+                        if current_state in {WATER, ROCK, DESERT}:
+                            continue
+                    
+                    # Rysuj tylko na pustych polach lub dozwolonych
+                    if current_state == EMPTY or (state not in protected_states):
                         self.grid[y][x] = state
                         if state == WATER and store_width is not None:
                             self.water_width[y][x] = store_width
 
     def generate_natural_blob(self, count, state, min_r, max_r, roughness=10):
-        """Generuje naturalne kształty (jeziora, góry)"""
+        """Generuje naturalne kształty (jeziora, góry, pustynie)"""
         for _ in range(count):
-            cx = random.randint(20, self.grid_width - 20)
-            cy = random.randint(20, self.grid_height - 20)
+            # Większe marginesy żeby uniknąć nakładania na brzegach
+            margin = 30
+            cx = random.randint(margin, self.grid_width - margin)
+            cy = random.randint(margin, self.grid_height - margin)
 
             base_radius = random.randint(min_r, max_r)
             self.draw_circle_safe(cx, cy, base_radius, state, store_width=base_radius)
@@ -290,11 +314,11 @@ class ForestFireSimulation:
 
     def generate_desert(self):
         """Generuje pustynię która wolno się rozszerza"""
-        # Losowy punkt startowy pustyni (z dala od brzegów)
-        cx = random.randint(40, self.grid_width - 40)
-        cy = random.randint(40, self.grid_height - 40)
+        # Większe marginesy dla pustyni
+        margin = 50
+        cx = random.randint(margin, self.grid_width - margin)
+        cy = random.randint(margin, self.grid_height - margin)
         
-        # Początkowy rozmiar pustyni
         initial_radius = random.randint(15, 25)
         
         for dy in range(-initial_radius, initial_radius + 1):
@@ -302,8 +326,8 @@ class ForestFireSimulation:
                 if dx*dx + dy*dy <= initial_radius*initial_radius:
                     nx, ny = cx + dx, cy + dy
                     if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height:
-                        # Pustynia nie nachodzi na wodę ani góry
-                        if self.grid[ny][nx] not in [WATER, ROCK]:
+                        # Używamy draw_circle_safe który już chroni wodę i góry
+                        if self.grid[ny][nx] == EMPTY:
                             self.grid[ny][nx] = DESERT
 
     def cut_forest_area(self, x, y, radius=3):
@@ -316,8 +340,21 @@ class ForestFireSimulation:
                         self.grid[ny][nx] = FIREBREAK
                         self.age_grid[ny][nx] = 0
 
+    def plant_trees_area(self, x, y, radius=2):
+        """Sadzi drzewa w małym kółku (promień 2)"""
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                # DODANE: Sprawdzenie czy jest w kółku
+                if dx*dx + dy*dy <= radius*radius:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height:
+                        # Można sadzić na: pustej przestrzeni, popiele, pustyni
+                        if self.grid[ny][nx] in [EMPTY, ASH, DESERT]:
+                            self.grid[ny][nx] = TREE_MATURE
+                            self.age_grid[ny][nx] = 50
+
     def initialize_forest(self, density=0.75):
-        """Inicjalizacja lasu z wodą, górami i opcjonalnie pustynią"""
+        """Inicjalizacja lasu - POPRAWIONA KOLEJNOŚĆ"""
         self.grid.fill(EMPTY)
         self.age_grid.fill(0)
         self.fire_intensity.fill(0)
@@ -327,11 +364,16 @@ class ForestFireSimulation:
         self.counts = {}
         self.has_desert = False
 
-        # NAJPIERW woda i rzeki
+        # KROK 1: Co trzecia symulacja - dodaj pustynię NAJPIERW
+        if random.random() < 0.33:
+            self.generate_desert()
+            self.has_desert = True
+
+        # KROK 2: POTEM woda i rzeki (nie nachodzą na pustynię dzięki draw_circle_safe)
         self.generate_natural_blob(random.randint(3, 7), WATER, 8, 20, roughness=8)
         self.generate_rivers(random.randint(2, 4))
         
-        # POTEM góry
+        # KROK 3: POTEM góry (nie nachodzą na wodę ani pustynię)
         r_mountains = random.random()
         if r_mountains < 0.1:
             num_mountains = 0
@@ -342,12 +384,7 @@ class ForestFireSimulation:
 
         self.generate_natural_blob(num_mountains, ROCK, 15, 30, roughness=15)
 
-        # Co trzecia symulacja - dodaj pustynię
-        if random.random() < 0.33:
-            self.generate_desert()
-            self.has_desert = True
-
-        # Dodaj drzewa (nie na wodzie, górach ani pustyni)
+        # KROK 4: NA KOŃCU drzewa (nie na wodzie, górach ani pustyni)
         random_mask = np.random.random((self.grid_height, self.grid_width)) < density
         occupied_mask = (self.grid != EMPTY)
         tree_mask = random_mask & (~occupied_mask)
@@ -374,7 +411,7 @@ class ForestFireSimulation:
                 if self.wind_strength > 0:
                     dot = dx * self.wind_direction[0] + dy * self.wind_direction[1]
                     if dot > 0:
-                        wind_mod += self.wind_strength * 3.0 * dot  # Zwiększone z 2.5 na 3.0
+                        wind_mod += self.wind_strength * 3.0 * dot
                     else:
                         wind_mod *= 0.2
                 neighbors.append((nx, ny, wind_mod))
@@ -415,20 +452,15 @@ class ForestFireSimulation:
         return False
 
     def can_fire_cross_water(self, x, y, wind_factor):
-        """
-        Sprawdza czy ogień może przeskoczyć przez wodę przy silnym wietrze
-        """
+        """Sprawdza czy ogień może przeskoczyć przez wodę przy silnym wietrze"""
         if self.grid[y][x] != WATER:
             return False
         
         water_w = self.water_width[y][x]
         
-        # Wąska rzeka (< 3.5 piksele szerokości) + silny wiatr
-        if water_w < 3.5 and wind_factor > 3.0:  # Zmienione progi
-            # Im mocniejszy wiatr i węższa rzeka, tym większa szansa
+        if water_w < 3.5 and wind_factor > 3.0:
             jump_chance = (wind_factor - 3.0) * 0.4 * (3.5 - water_w) / 3.5
             if random.random() < jump_chance:
-                print(f"FIRE JUMPED! Width: {water_w:.1f}, Wind: {wind_factor:.1f}, Chance: {jump_chance:.2f}")
                 return True
         
         return False
@@ -455,11 +487,9 @@ class ForestFireSimulation:
                         for nx, ny, w_factor in self.get_neighbors(x, y):
                             n_state = self.grid[ny][nx]
 
-                            # Góry, pasy ochronne i pustynia zawsze blokują
                             if n_state in [ROCK, FIREBREAK, DESERT]:
                                 continue
 
-                            # Woda - może być przeskoczona przy silnym wietrze
                             if n_state == WATER:
                                 if not self.can_fire_cross_water(nx, ny, w_factor):
                                     continue
@@ -487,7 +517,6 @@ class ForestFireSimulation:
 
                 elif state == EMPTY:
                     if random.random() < self.p_grow:
-                        # Nie rośnij w pobliżu pustyni
                         has_desert_neighbor = False
                         for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
                             nx, ny = x + dx, y + dy
@@ -508,18 +537,14 @@ class ForestFireSimulation:
                     elif state == TREE_MATURE and age > 250:
                         new_grid[y][x] = TREE_OLD
 
-                # PUSTYNIA - wolno się rozszerza
                 elif state == DESERT:
-                    # Bardzo wolno zamienia sąsiednie komórki w pustynię
                     if random.random() < P_DESERT_SPREAD:
-                        # Wybierz losowego sąsiada
                         dx, dy = random.choice([(-1,0), (1,0), (0,-1), (0,1)])
                         nx, ny = x + dx, y + dy
                         
                         if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height:
                             neighbor_state = self.grid[ny][nx]
                             
-                            # Pustynia nie przechodzi przez wodę ani nie zbliża się za bardzo
                             if neighbor_state in [TREE_YOUNG, TREE_MATURE, TREE_OLD, EMPTY, ASH]:
                                 if not self.is_near_water(nx, ny, max_distance=8):
                                     new_grid[ny][nx] = DESERT
@@ -662,7 +687,6 @@ class ForestFireSimulation:
         surface.blit(params_title, (ui_x, y))
         y += 26
 
-        # Wizualizacja wiatru
         wind_strength_text = f"Wiatr: {self.wind_strength:.1f}"
         if self.wind_strength > 3.0:
             wind_color = (255, 50, 50)
@@ -717,7 +741,7 @@ class ForestFireSimulation:
             "",
             "PODSTAWY:",
             "  LPM - Podpal",
-            "  PPM - Sadz",
+            "  PPM - Sadz 3x3",
             "  C - Wytnij",
             "  W - Wiatr",
             "  +/- Sila wiatru",
@@ -833,8 +857,8 @@ while running:
             if mouse_btn[0]:
                 sim.start_fire(gx, gy, 2)
             elif mouse_btn[2]:
-                if sim.grid[gy][gx] not in [WATER, ROCK, DESERT]:
-                    sim.grid[gy][gx] = TREE_MATURE
+                # ZMIENIONE: Sadzenie drzew w obszarze 9x9 (radius=4)
+                sim.plant_trees_area(gx, gy, radius=2)
 
     sim.update()
 
